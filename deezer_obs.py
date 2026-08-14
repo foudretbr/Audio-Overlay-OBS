@@ -1,14 +1,25 @@
 import asyncio
 import json
 import base64
+import ctypes
 import sys
+import os
 import threading
 import time
+import subprocess
+import urllib.request
+import winreg
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as MediaManager
 from winsdk.windows.storage.streams import DataReader
 import pystray
 from PIL import Image, ImageDraw
+
+# Update configuration
+CURRENT_VERSION = "1.0.0"
+GITHUB_REPO = "foudretbr/Deezer-Obs-Widget"
+REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+APP_NAME = "DeezerOBSWidget"
 
 media_data = {
     "title": "Waiting...",
@@ -257,6 +268,20 @@ async def update_media_loop():
             
         await asyncio.sleep(1)
 
+def enforce_single_instance():
+    """
+    Checks if another instance of the application is already running using a Windows Mutex.
+    Exits immediately if it is.
+    """
+    mutex_name = "DeezerOBSWidget_SingleInstance_Mutex"
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    last_error = ctypes.windll.kernel32.GetLastError()
+    
+    if last_error == 183:
+        sys.exit(0)
+        
+    return mutex
+
 def run_server():
     """
     Starts the local HTTP server.
@@ -275,13 +300,126 @@ def create_tray_icon():
     draw.polygon([(20, 15), (20, 49), (50, 32)], fill=(255, 255, 255))
     return image
 
+def is_startup_enabled():
+    """
+    Checks if the application is currently in the Windows startup registry.
+    
+    @return: Boolean
+    """
+    if not getattr(sys, 'frozen', False):
+        return False
+        
+    try:
+        registry_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, winreg.KEY_READ)
+        value, _ = winreg.QueryValueEx(registry_key, APP_NAME)
+        winreg.CloseKey(registry_key)
+        return value == sys.executable
+    except WindowsError:
+        return False
+
+def toggle_startup(icon, item):
+    """
+    Toggles the application in the Windows startup registry.
+    
+    @param icon: Pystray icon instance
+    @param item: Pystray menu item
+    """
+    if not getattr(sys, 'frozen', False):
+        if icon:
+            icon.notify("Startup toggle only works in compiled .exe mode.", "Info")
+        return
+
+    enabled = is_startup_enabled()
+    try:
+        registry_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, winreg.KEY_WRITE)
+        if enabled:
+            winreg.DeleteValue(registry_key, APP_NAME)
+            if icon:
+                icon.notify("Removed from Windows startup.", "Startup")
+        else:
+            winreg.SetValueEx(registry_key, APP_NAME, 0, winreg.REG_SZ, sys.executable)
+            if icon:
+                icon.notify("Added to Windows startup.", "Startup")
+        winreg.CloseKey(registry_key)
+    except Exception as e:
+        if icon:
+            icon.notify("Failed to modify startup settings.", "Error")
+
+def apply_update(download_url, icon=None):
+    """
+    Downloads the new executable and runs a batch script to replace the current one.
+    
+    @param download_url: Direct link to the .exe file
+    @param icon: Pystray icon instance for notifications
+    """
+    if not getattr(sys, 'frozen', False):
+        if icon:
+            icon.notify("Auto-update disabled in script mode.", "Update")
+        return
+
+    new_exe = "deezer_obs_update.exe"
+    current_exe = sys.executable
+    current_exe_name = os.path.basename(current_exe)
+    
+    try:
+        if icon:
+            icon.notify("Downloading update... Application will restart.", "Deezer OBS Widget")
+            
+        urllib.request.urlretrieve(download_url, new_exe)
+        
+        bat_content = f"""@echo off
+timeout /t 2 /nobreak > NUL
+del "{current_exe_name}"
+ren "{new_exe}" "{current_exe_name}"
+start "" "{current_exe_name}"
+del "%~f0"
+"""
+        with open("updater.bat", "w") as f:
+            f.write(bat_content)
+            
+        subprocess.Popen(["updater.bat"], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        
+        if icon:
+            icon.stop()
+        sys.exit(0)
+    except Exception:
+        if icon:
+            icon.notify("Update failed.", "Error")
+
+def check_for_updates(icon=None, item=None):
+    """
+    Checks the GitHub API for new releases and triggers the update process if found.
+    
+    @param icon: Pystray icon instance
+    @param item: Pystray menu item (when clicked manually)
+    """
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = urllib.request.urlopen(req, timeout=5)
+        data = json.loads(response.read().decode('utf-8'))
+        
+        latest_version = data.get("tag_name", "").replace("v", "")
+        
+        if latest_version and latest_version > CURRENT_VERSION:
+            assets = data.get("assets", [])
+            for asset in assets:
+                if asset.get("name", "").endswith(".exe"):
+                    download_url = asset.get("browser_download_url")
+                    if download_url:
+                        apply_update(download_url, icon)
+                        return
+                        
+        if item and icon:
+            icon.notify("You are on the latest version.", "Up to date")
+            
+    except Exception:
+        if item and icon:
+            icon.notify("Could not check for updates.", "Error")
+
 def quit_app(icon, item):
     """
     Stops the tray icon and exits the application entirely.
-    
-    @param icon: The tray icon instance.
-    @param item: The clicked menu item.
-    @return: None
     """
     icon.stop()
     sys.exit(0)
@@ -289,12 +427,10 @@ def quit_app(icon, item):
 def show_notification(icon):
     """
     Delays slightly and triggers a Windows notification.
-    
-    @param icon: The tray icon instance.
-    @return: None
     """
     time.sleep(1)
     icon.notify("Widget is running in the background. Ready for OBS!", "Deezer OBS Widget")
+    check_for_updates(icon)
 
 def run_async_loop_thread():
     """
@@ -303,10 +439,19 @@ def run_async_loop_thread():
     asyncio.run(update_media_loop())
 
 if __name__ == '__main__':
+    app_mutex = enforce_single_instance()
+    
     threading.Thread(target=run_server, daemon=True).start()
     threading.Thread(target=run_async_loop_thread, daemon=True).start()
     
-    tray_menu = pystray.Menu(pystray.MenuItem('Exit / Quitter', quit_app))
+    tray_menu = pystray.Menu(
+        pystray.MenuItem('Run at startup', toggle_startup, checked=lambda item: is_startup_enabled()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem('Check for updates', check_for_updates),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem('Exit / Quitter', quit_app)
+    )
+    
     tray_icon = pystray.Icon("DeezerOBS", create_tray_icon(), "Deezer OBS Widget", tray_menu)
     
     threading.Thread(target=show_notification, args=(tray_icon,), daemon=True).start()
