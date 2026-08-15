@@ -9,6 +9,8 @@ import time
 import subprocess
 import urllib.request
 import winreg
+import tkinter as tk
+from tkinter import ttk
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as MediaManager
 from winsdk.windows.storage.streams import DataReader
@@ -357,7 +359,8 @@ def toggle_startup(icon, item):
 
 def apply_update(download_url, icon=None):
     """
-    Downloads the new executable, renames files to bypass AV, and restarts.
+    Spawns a lightweight progress bar window, downloads the new executable, 
+    renames files to bypass AV, and restarts the application.
     
     @param download_url: Direct link to the .exe file
     @param icon: Pystray icon instance for notifications
@@ -372,35 +375,56 @@ def apply_update(download_url, icon=None):
     new_exe = current_exe + ".new"
     
     try:
-        if icon:
-            icon.notify("Downloading update... Please wait.", "Deezer OBS Widget")
-            
-        # Download the new file to a .new extension
-        urllib.request.urlretrieve(download_url, new_exe)
+        # Create a lightweight UI window for the loading bar
+        root = tk.Tk()
+        root.title("Deezer OBS Updater")
+        root.geometry("350x70")
+        root.resizable(False, False)
+        root.attributes("-topmost", True)
         
-        # Rename the currently running file to .old (Windows allows this)
+        # Center window on screen
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        x_cordinate = int((screen_width / 2) - (350 / 2))
+        y_cordinate = int((screen_height / 2) - (70 / 2))
+        root.geometry(f"350x70+{x_cordinate}+{y_cordinate}")
+
+        ttk.Label(root, text="Downloading update...").pack(pady=(8, 2))
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(root, variable=progress_var, maximum=100)
+        progress_bar.pack(fill=tk.X, padx=20, pady=5)
+
+        def download_progress(count, block_size, total_size):
+            if total_size > 0:
+                percent = min(int(count * block_size * 100 / total_size), 100)
+                progress_var.set(percent)
+                root.update()
+
+        root.update()
+            
+        urllib.request.urlretrieve(download_url, new_exe, reporthook=download_progress)
+        
+        root.destroy()
+        
+        # Handle file replacement seamlessly
         if os.path.exists(old_exe):
             os.remove(old_exe)
         os.rename(current_exe, old_exe)
-        
-        # Rename the new file to the original executable name
         os.rename(new_exe, current_exe)
         
         if icon:
-            icon.notify("Update installed! Restarting...", "Deezer OBS Widget")
-            time.sleep(2) # Allow the notification to show before killing the app
             icon.stop()
             
-        # Restart the app with a flag to show success notification
         subprocess.Popen([current_exe, "--updated"], creationflags=subprocess.CREATE_NO_WINDOW)
         os._exit(0)
         
     except Exception:
+        if 'root' in locals():
+            root.destroy()
         if icon:
             icon.notify("Update failed.", "Error")
-            # Revert renames if possible
-            if os.path.exists(old_exe) and not os.path.exists(current_exe):
-                os.rename(old_exe, current_exe)
+        if os.path.exists(old_exe) and not os.path.exists(current_exe):
+            os.rename(old_exe, current_exe)
 
 def check_for_updates(icon=None, item=None):
     """
@@ -449,6 +473,7 @@ def quit_app(icon, item):
 def show_notification(icon):
     """
     Delays slightly and triggers a Windows notification based on launch arguments.
+    Also automatically checks for updates quietly in the background on startup.
     """
     time.sleep(1)
     
@@ -456,6 +481,7 @@ def show_notification(icon):
         icon.notify(f"Successfully updated to version {CURRENT_VERSION}!", "Update Complete")
     else:
         icon.notify("Widget is running in the background. Ready for OBS!", "Deezer OBS Widget")
+        # Auto-check for updates every time the app starts normally
         check_for_updates(icon)
 
 def run_async_loop_thread():
