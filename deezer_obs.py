@@ -357,7 +357,7 @@ def toggle_startup(icon, item):
 
 def apply_update(download_url, icon=None):
     """
-    Downloads the new executable and runs a batch script to replace the current one.
+    Downloads the new executable, renames files to bypass AV, and restarts.
     
     @param download_url: Direct link to the .exe file
     @param icon: Pystray icon instance for notifications
@@ -367,34 +367,40 @@ def apply_update(download_url, icon=None):
             icon.notify("Auto-update disabled in script mode.", "Update")
         return
 
-    new_exe = "deezer_obs_update.exe"
     current_exe = sys.executable
-    current_exe_name = os.path.basename(current_exe)
+    old_exe = current_exe + ".old"
+    new_exe = current_exe + ".new"
     
     try:
         if icon:
-            icon.notify("Downloading update... Application will restart.", "Deezer OBS Widget")
+            icon.notify("Downloading update... Please wait.", "Deezer OBS Widget")
             
+        # Download the new file to a .new extension
         urllib.request.urlretrieve(download_url, new_exe)
         
-        bat_content = f"""@echo off
-timeout /t 2 /nobreak > NUL
-del "{current_exe_name}"
-ren "{new_exe}" "{current_exe_name}"
-start "" "{current_exe_name}"
-del "%~f0"
-"""
-        with open("updater.bat", "w") as f:
-            f.write(bat_content)
-            
-        subprocess.Popen(["updater.bat"], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        # Rename the currently running file to .old (Windows allows this)
+        if os.path.exists(old_exe):
+            os.remove(old_exe)
+        os.rename(current_exe, old_exe)
+        
+        # Rename the new file to the original executable name
+        os.rename(new_exe, current_exe)
         
         if icon:
+            icon.notify("Update installed! Restarting...", "Deezer OBS Widget")
+            time.sleep(2) # Allow the notification to show before killing the app
             icon.stop()
-        sys.exit(0)
+            
+        # Restart the app with a flag to show success notification
+        subprocess.Popen([current_exe, "--updated"], creationflags=subprocess.CREATE_NO_WINDOW)
+        os._exit(0)
+        
     except Exception:
         if icon:
             icon.notify("Update failed.", "Error")
+            # Revert renames if possible
+            if os.path.exists(old_exe) and not os.path.exists(current_exe):
+                os.rename(old_exe, current_exe)
 
 def check_for_updates(icon=None, item=None):
     """
@@ -430,10 +436,6 @@ def check_for_updates(icon=None, item=None):
 def dummy_action(icon, item):
     """
     Dummy function for non-clickable menu items.
-    
-    @param icon: The tray icon instance.
-    @param item: The clicked menu item.
-    @return: None
     """
     pass
 
@@ -446,11 +448,15 @@ def quit_app(icon, item):
 
 def show_notification(icon):
     """
-    Delays slightly and triggers a Windows notification.
+    Delays slightly and triggers a Windows notification based on launch arguments.
     """
     time.sleep(1)
-    icon.notify("Widget is running in the background. Ready for OBS!", "Deezer OBS Widget")
-    check_for_updates(icon)
+    
+    if "--updated" in sys.argv:
+        icon.notify(f"Successfully updated to version {CURRENT_VERSION}!", "Update Complete")
+    else:
+        icon.notify("Widget is running in the background. Ready for OBS!", "Deezer OBS Widget")
+        check_for_updates(icon)
 
 def run_async_loop_thread():
     """
@@ -458,7 +464,20 @@ def run_async_loop_thread():
     """
     asyncio.run(update_media_loop())
 
+def cleanup_old_updates():
+    """
+    Removes the leftover .old executable from previous updates.
+    """
+    if getattr(sys, 'frozen', False):
+        try:
+            old_file = sys.executable + ".old"
+            if os.path.exists(old_file):
+                os.remove(old_file)
+        except Exception:
+            pass
+
 if __name__ == '__main__':
+    cleanup_old_updates()
     app_mutex = enforce_single_instance()
     
     threading.Thread(target=run_server, daemon=True).start()
