@@ -15,7 +15,7 @@ from winsdk.windows.storage.streams import DataReader
 import pystray
 from PIL import Image, ImageDraw
 
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.0.2"
 GITHUB_REPO = "foudretbr/Deezer-Obs-Widget"
 REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "DeezerOBSWidget"
