@@ -15,7 +15,6 @@ from winsdk.windows.storage.streams import DataReader
 import pystray
 from PIL import Image, ImageDraw
 
-# Update configuration
 CURRENT_VERSION = "1.0.0"
 GITHUB_REPO = "foudretbr/Deezer-Obs-Widget"
 REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -223,14 +222,20 @@ class SimpleHandler(BaseHTTPRequestHandler):
 async def update_media_loop():
     """
     Asynchronous loop that continuously polls Windows SMTC for media properties.
+    Optimized for long streaming sessions (prevents memory leaks and Windows API freezes).
     
     @return: None
     """
     global media_data
+    manager = None
+    last_song_id = ""
+    
     while True:
         try:
-            sessions = await MediaManager.request_async()
-            current_session = sessions.get_current_session()
+            if not manager:
+                manager = await MediaManager.request_async()
+                
+            current_session = manager.get_current_session()
             
             if current_session:
                 info = await current_session.try_get_media_properties_async()
@@ -238,18 +243,23 @@ async def update_media_loop():
                     media_data["title"] = info.title
                     media_data["artist"] = info.artist
                     
-                    if info.thumbnail:
-                        try:
-                            stream = await info.thumbnail.open_read_async()
-                            reader = DataReader(stream)
-                            await reader.load_async(stream.size)
-                            buffer = reader.read_buffer(stream.size)
-                            image_bytes = bytes(buffer)
-                            media_data["cover"] = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode('utf-8')
-                        except Exception:
+                    current_song_id = f"{info.title}-{info.artist}"
+                    
+                    if current_song_id != last_song_id:
+                        if info.thumbnail:
+                            try:
+                                stream = await info.thumbnail.open_read_async()
+                                reader = DataReader(stream)
+                                await reader.load_async(stream.size)
+                                buffer = reader.read_buffer(stream.size)
+                                image_bytes = bytes(buffer)
+                                media_data["cover"] = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode('utf-8')
+                            except Exception:
+                                media_data["cover"] = ""
+                        else:
                             media_data["cover"] = ""
-                    else:
-                        media_data["cover"] = ""
+                        
+                        last_song_id = current_song_id
                 
                 playback = current_session.get_playback_info()
                 if playback:
@@ -262,9 +272,9 @@ async def update_media_loop():
                 if timeline and timeline.end_time.total_seconds() > 0:
                     media_data["duration"] = timeline.end_time.total_seconds()
                     media_data["position"] = timeline.position.total_seconds()
-            
+        
         except Exception:
-            pass
+            manager = None
             
         await asyncio.sleep(1)
 
@@ -341,7 +351,7 @@ def toggle_startup(icon, item):
             if icon:
                 icon.notify("Added to Windows startup.", "Startup")
         winreg.CloseKey(registry_key)
-    except Exception as e:
+    except Exception:
         if icon:
             icon.notify("Failed to modify startup settings.", "Error")
 
@@ -417,6 +427,16 @@ def check_for_updates(icon=None, item=None):
         if item and icon:
             icon.notify("Could not check for updates.", "Error")
 
+def dummy_action(icon, item):
+    """
+    Dummy function for non-clickable menu items.
+    
+    @param icon: The tray icon instance.
+    @param item: The clicked menu item.
+    @return: None
+    """
+    pass
+
 def quit_app(icon, item):
     """
     Stops the tray icon and exits the application entirely.
@@ -445,6 +465,8 @@ if __name__ == '__main__':
     threading.Thread(target=run_async_loop_thread, daemon=True).start()
     
     tray_menu = pystray.Menu(
+        pystray.MenuItem(f'Version {CURRENT_VERSION}', dummy_action, enabled=False),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem('Run at startup', toggle_startup, checked=lambda item: is_startup_enabled()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem('Check for updates', check_for_updates),
