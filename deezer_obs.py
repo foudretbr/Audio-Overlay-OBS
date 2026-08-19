@@ -17,7 +17,7 @@ from winsdk.windows.storage.streams import DataReader
 import pystray
 from PIL import Image, ImageDraw
 
-CURRENT_VERSION = "1.0.2"
+CURRENT_VERSION = "1.0.3"
 GITHUB_REPO = "foudretbr/Deezer-Obs-Widget"
 REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "DeezerOBSWidget"
@@ -224,7 +224,8 @@ class SimpleHandler(BaseHTTPRequestHandler):
 async def update_media_loop():
     """
     Asynchronous loop that continuously polls Windows SMTC for media properties.
-    Optimized for long streaming sessions (prevents memory leaks and Windows API freezes).
+    Optimized for long streaming sessions. 
+    Explicitly filters for Deezer (and Spotify) to ignore browsers or other media apps.
     
     @return: None
     """
@@ -237,10 +238,18 @@ async def update_media_loop():
             if not manager:
                 manager = await MediaManager.request_async()
                 
-            current_session = manager.get_current_session()
+            session_list = manager.get_sessions()
+            target_session = None
             
-            if current_session:
-                info = await current_session.try_get_media_properties_async()
+            # Find the first session that matches our targeted apps
+            for session in session_list:
+                app_id = session.source_app_user_model_id.lower() if session.source_app_user_model_id else ""
+                if "deezer" in app_id or "spotify" in app_id:
+                    target_session = session
+                    break
+            
+            if target_session:
+                info = await target_session.try_get_media_properties_async()
                 if info and info.title:
                     media_data["title"] = info.title
                     media_data["artist"] = info.artist
@@ -263,14 +272,14 @@ async def update_media_loop():
                         
                         last_song_id = current_song_id
                 
-                playback = current_session.get_playback_info()
+                playback = target_session.get_playback_info()
                 if playback:
                     if playback.playback_status == 4:
                         media_data["status"] = "playing"
                     else:
                         media_data["status"] = "paused"
                 
-                timeline = current_session.get_timeline_properties()
+                timeline = target_session.get_timeline_properties()
                 if timeline and timeline.end_time.total_seconds() > 0:
                     media_data["duration"] = timeline.end_time.total_seconds()
                     media_data["position"] = timeline.position.total_seconds()
@@ -375,14 +384,12 @@ def apply_update(download_url, icon=None):
     new_exe = current_exe + ".new"
     
     try:
-        # Create a lightweight UI window for the loading bar
         root = tk.Tk()
         root.title("Deezer OBS Updater")
         root.geometry("350x70")
         root.resizable(False, False)
         root.attributes("-topmost", True)
         
-        # Center window on screen
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
         x_cordinate = int((screen_width / 2) - (350 / 2))
@@ -406,7 +413,6 @@ def apply_update(download_url, icon=None):
         
         root.destroy()
         
-        # Handle file replacement seamlessly
         if os.path.exists(old_exe):
             os.remove(old_exe)
         os.rename(current_exe, old_exe)
@@ -481,7 +487,6 @@ def show_notification(icon):
         icon.notify(f"Successfully updated to version {CURRENT_VERSION}!", "Update Complete")
     else:
         icon.notify("Widget is running in the background. Ready for OBS!", "Deezer OBS Widget")
-        # Auto-check for updates every time the app starts normally
         check_for_updates(icon)
 
 def run_async_loop_thread():
