@@ -17,10 +17,10 @@ from winsdk.windows.storage.streams import DataReader
 import pystray
 from PIL import Image, ImageDraw
 
-CURRENT_VERSION = "1.0.3"
-GITHUB_REPO = "foudretbr/Deezer-Obs-Widget"
+CURRENT_VERSION = "1.0.4"
+GITHUB_REPO = "foudretbr/Audio-Overlay-OBS"
 REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
-APP_NAME = "DeezerOBSWidget"
+APP_NAME = "AudioOverlayOBS"
 
 media_data = {
     "title": "Waiting...",
@@ -28,7 +28,8 @@ media_data = {
     "status": "paused",
     "position": 0,
     "duration": 1,
-    "cover": ""
+    "cover": "",
+    "source_app": "deezer"
 }
 
 HTML_PAGE = """
@@ -126,10 +127,9 @@ HTML_PAGE = """
 
         .progress-bar-fill {
             height: 100%;
-            background: #A238FF;
             border-radius: 2px;
             width: 0%;
-            transition: width 1s linear;
+            transition: width 1s linear, background-color 0.5s ease;
         }
     </style>
 </head>
@@ -180,7 +180,15 @@ HTML_PAGE = """
                 let percent = (data.position / data.duration) * 100;
                 if (percent > 100) percent = 100;
                 if (percent < 0 || isNaN(percent)) percent = 0;
-                document.getElementById('progress').style.width = percent + '%';
+                
+                let progressBar = document.getElementById('progress');
+                progressBar.style.width = percent + '%';
+                
+                if (data.source_app === 'spotify') {
+                    progressBar.style.backgroundColor = '#1DB954';
+                } else {
+                    progressBar.style.backgroundColor = '#A238FF';
+                }
                 
             } catch (error) {
                 console.error("API Fetch Error");
@@ -225,7 +233,7 @@ async def update_media_loop():
     """
     Asynchronous loop that continuously polls Windows SMTC for media properties.
     Optimized for long streaming sessions. 
-    Explicitly filters for Deezer (and Spotify) to ignore browsers or other media apps.
+    Explicitly filters for Deezer and Spotify.
     
     @return: None
     """
@@ -240,12 +248,17 @@ async def update_media_loop():
                 
             session_list = manager.get_sessions()
             target_session = None
+            detected_app = "deezer"
             
-            # Find the first session that matches our targeted apps
             for session in session_list:
                 app_id = session.source_app_user_model_id.lower() if session.source_app_user_model_id else ""
-                if "deezer" in app_id or "spotify" in app_id:
+                if "spotify" in app_id:
                     target_session = session
+                    detected_app = "spotify"
+                    break
+                elif "deezer" in app_id:
+                    target_session = session
+                    detected_app = "deezer"
                     break
             
             if target_session:
@@ -253,6 +266,7 @@ async def update_media_loop():
                 if info and info.title:
                     media_data["title"] = info.title
                     media_data["artist"] = info.artist
+                    media_data["source_app"] = detected_app
                     
                     current_song_id = f"{info.title}-{info.artist}"
                     
@@ -294,7 +308,7 @@ def enforce_single_instance():
     Checks if another instance of the application is already running using a Windows Mutex.
     Exits immediately if it is.
     """
-    mutex_name = "DeezerOBSWidget_SingleInstance_Mutex"
+    mutex_name = "AudioOverlayOBS_SingleInstance_Mutex"
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
     last_error = ctypes.windll.kernel32.GetLastError()
     
@@ -312,11 +326,11 @@ def run_server():
 
 def create_tray_icon():
     """
-    Generates a simple purple icon with a white play triangle for the system tray.
+    Generates a simple icon with a white play triangle for the system tray.
     
     @return: PIL.Image object
     """
-    image = Image.new('RGB', (64, 64), color=(162, 56, 255))
+    image = Image.new('RGB', (64, 64), color=(30, 30, 30))
     draw = ImageDraw.Draw(image)
     draw.polygon([(20, 15), (20, 49), (50, 32)], fill=(255, 255, 255))
     return image
@@ -385,7 +399,7 @@ def apply_update(download_url, icon=None):
     
     try:
         root = tk.Tk()
-        root.title("Deezer OBS Updater")
+        root.title("Audio Overlay Updater")
         root.geometry("350x70")
         root.resizable(False, False)
         root.attributes("-topmost", True)
@@ -486,7 +500,7 @@ def show_notification(icon):
     if "--updated" in sys.argv:
         icon.notify(f"Successfully updated to version {CURRENT_VERSION}!", "Update Complete")
     else:
-        icon.notify("Widget is running in the background. Ready for OBS!", "Deezer OBS Widget")
+        icon.notify("Widget is running in the background. Ready for OBS!", "Audio Overlay OBS")
         check_for_updates(icon)
 
 def run_async_loop_thread():
@@ -524,7 +538,7 @@ if __name__ == '__main__':
         pystray.MenuItem('Exit / Quitter', quit_app)
     )
     
-    tray_icon = pystray.Icon("DeezerOBS", create_tray_icon(), "Deezer OBS Widget", tray_menu)
+    tray_icon = pystray.Icon("AudioOverlayOBS", create_tray_icon(), "Audio Overlay OBS", tray_menu)
     
     threading.Thread(target=show_notification, args=(tray_icon,), daemon=True).start()
     
